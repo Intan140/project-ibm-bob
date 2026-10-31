@@ -11,17 +11,18 @@ let ALL_DATA = [];
 
 /** Active filter/sort/page state */
 const S = {
-  period:   'all',   // 'all' | 'this_month' | '3_months' | 'custom'
-  dateFrom: null,    // Date | null
-  dateTo:   null,    // Date | null
-  merek:    '',
-  kategori: '',
-  tipe:     '',
-  sumber:   '',
-  search:   '',
-  sortCol:  'tanggal_sewa',
-  sortDir:  'desc',
-  page:     1,
+  period:      'all',   // 'all' | 'this_month' | '3_months' | 'custom'
+  dateFrom:    null,    // Date | null
+  dateTo:      null,    // Date | null
+  merek:       '',
+  kategori:    '',
+  tipe:        '',
+  sumber:      '',
+  search:      '',
+  sortCol:     'tanggal_sewa',
+  sortDir:     'desc',
+  page:        1,
+  granularity: 'monthly', // 'daily' | 'weekly' | 'monthly'
 };
 
 const PAGE_SIZE = 10;
@@ -199,6 +200,7 @@ function renderAll() {
   const data = getFiltered();
   renderKPIs(data);
   renderInsight(data);
+  renderTop5(data);
   renderTrend(data);
   renderCameraChart(data);
   renderTipeChart(data);
@@ -211,42 +213,123 @@ function renderAll() {
 // ── KPI ───────────────────────────────────────────────────────────────────────
 
 function renderKPIs(data) {
-  const n        = data.length;
-  const revenue  = data.reduce((s, r) => s + r.total_bayar, 0);
-  const denda    = data.reduce((s, r) => s + r.denda, 0);
-  const durasi   = n ? data.reduce((s, r) => s + r.durasi_hari, 0) / n : 0;
+  const n         = data.length;
+  const revenue   = data.reduce((s, r) => s + r.total_bayar, 0);
+  const denda     = data.reduce((s, r) => s + r.denda, 0);
+  const durasi    = n ? data.reduce((s, r) => s + r.durasi_hari, 0) / n : 0;
   const lateCount = data.filter(r => r.hari_telat > 0).length;
-  const latePct  = n ? (lateCount / n * 100) : 0;
+  const latePct   = n ? (lateCount / n * 100) : 0;
 
-  document.getElementById('kv-pendapatan').textContent = fmtRp(revenue);
-  document.getElementById('kv-jumlah').textContent     = n.toLocaleString('id-ID') + ' transaksi';
-  document.getElementById('kv-durasi').textContent     = durasi.toFixed(1) + ' hari';
-  document.getElementById('kv-telat').textContent      = latePct.toFixed(1) + '%';
-  document.getElementById('kv-denda').textContent      = fmtRp(denda);
+  // Max values across full dataset (for bar proportion reference)
+  const allRev    = ALL_DATA.reduce((s, r) => s + r.total_bayar, 0);
+  const allDenda  = ALL_DATA.reduce((s, r) => s + r.denda, 0);
+  const maxDur    = 30; // reasonable max duration ceiling
+
+  animateValue('kv-pendapatan', revenue, v => fmtRp(v));
+  animateValue('kv-jumlah',     n,       v => Math.round(v).toLocaleString('id-ID') + ' transaksi');
+  animateValue('kv-durasi',     durasi,  v => v.toFixed(1) + ' hari');
+  animateValue('kv-telat',      latePct, v => v.toFixed(1) + '%');
+  animateValue('kv-denda',      denda,   v => fmtRp(v));
+
+  // Progress bars (delayed so CSS transition fires)
+  setTimeout(() => {
+    setBar('kb-pendapatan', allRev   ? revenue / allRev * 100   : 0);
+    setBar('kb-jumlah',     ALL_DATA.length ? n / ALL_DATA.length * 100 : 0);
+    setBar('kb-durasi',     Math.min(100, durasi / maxDur * 100));
+    setBar('kb-telat',      latePct);
+    setBar('kb-denda',      allDenda ? denda / allDenda * 100   : 0);
+  }, 80);
+}
+
+/** Animate a numeric value from its current display to target */
+function animateValue(id, target, fmt) {
+  const el = document.getElementById(id);
+  const start     = parseFloat(el.dataset.val) || 0;
+  const duration  = 600;
+  const startTime = performance.now();
+
+  function step(now) {
+    const progress = Math.min(1, (now - startTime) / duration);
+    const eased    = 1 - Math.pow(1 - progress, 3); // ease-out cubic
+    const current  = start + (target - start) * eased;
+    el.textContent  = fmt(current);
+    el.dataset.val  = target;
+    if (progress < 1) requestAnimationFrame(step);
+  }
+  requestAnimationFrame(step);
+}
+
+/** Set a KPI bar width */
+function setBar(id, pct) {
+  const el = document.getElementById(id);
+  if (el) el.style.width = Math.min(100, Math.max(0, pct)).toFixed(1) + '%';
+}
+
+// ── Top 5 leaderboard ────────────────────────────────────────────────────────
+
+/**
+ * Render Top 5 Kamera Terpopuler leaderboard with animated bars.
+ * @param {Object[]} data
+ */
+function renderTop5(data) {
+  const ol = document.getElementById('top5-list');
+  if (!data.length) {
+    ol.innerHTML = '<li class="tbl-empty">Tidak ada data.</li>';
+    return;
+  }
+
+  const counts = countBy(data, 'nama_kamera');
+  const top5   = Object.entries(counts)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 5);
+
+  const maxCnt = top5[0][1];
+  const rankClass = ['gold', 'silver', 'bronze', '', ''];
+
+  ol.innerHTML = top5.map(([name, cnt], i) => `
+    <li class="top5-item">
+      <span class="top5-rank ${rankClass[i]}">#${i + 1}</span>
+      <div class="top5-bar-wrap">
+        <span class="top5-name" title="${esc(name)}">${esc(name)}</span>
+        <div class="top5-track">
+          <div class="top5-fill" data-target="${(cnt / maxCnt * 100).toFixed(1)}" style="width:0%"></div>
+        </div>
+      </div>
+      <span class="top5-count">${cnt} sewa</span>
+    </li>`).join('');
+
+  // Animate bars in after a short delay
+  setTimeout(() => {
+    ol.querySelectorAll('.top5-fill').forEach(bar => {
+      bar.style.width = bar.dataset.target + '%';
+    });
+  }, 80);
 }
 
 // ── Insight ───────────────────────────────────────────────────────────────────
 
-const INS_ICONS = {
-  camera: `<svg class="ins-icon" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>`,
-  trend:  `<svg class="ins-icon" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 6 13.5 15.5 8.5 10.5 1 18"/><polyline points="17 6 23 6 23 12"/></svg>`,
-  clock:  `<svg class="ins-icon" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>`,
+// SVG snippets for insight pills
+const PIL_ICON = {
+  camera: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>`,
+  trend:  `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 6 13.5 15.5 8.5 10.5 1 18"/><polyline points="17 6 23 6 23 12"/></svg>`,
+  clock:  `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>`,
 };
 
 function renderInsight(data) {
   const el = document.getElementById('insight-body');
   if (!data.length) {
-    el.innerHTML = '<p>Tidak ada data untuk filter yang dipilih.</p>';
+    el.innerHTML = '<p class="insight-empty">Tidak ada data untuk filter yang dipilih.</p>';
     return;
   }
 
-  const lines = [];
+  const pills = [];
 
-  // Top camera by transaction count
-  const byCam = countBy(data, 'nama_kamera');
+  // Top camera
+  const byCam  = countBy(data, 'nama_kamera');
   const topCam = Object.entries(byCam).sort((a, b) => b[1] - a[1])[0];
   if (topCam)
-    lines.push(`${INS_ICONS.camera} Kamera terlaris adalah <strong>${topCam[0]}</strong> dengan <strong>${topCam[1]}</strong> transaksi.`);
+    pills.push({ icon: PIL_ICON.camera, cls: 'orange',
+      text: `Kamera terlaris adalah <strong>${topCam[0]}</strong> dengan <strong>${topCam[1]}</strong> transaksi.` });
 
   // Peak month
   const byMonth = {};
@@ -255,10 +338,11 @@ function renderInsight(data) {
   if (peakM) {
     const [y, m] = peakM[0].split('-');
     const names  = ['Jan','Feb','Mar','Apr','Mei','Jun','Jul','Agu','Sep','Okt','Nov','Des'];
-    lines.push(`${INS_ICONS.trend} Bulan paling sibuk adalah <strong>${names[+m - 1]} ${y}</strong> dengan <strong>${peakM[1]}</strong> sewa.`);
+    pills.push({ icon: PIL_ICON.trend, cls: 'blue',
+      text: `Bulan paling sibuk adalah <strong>${names[+m - 1]} ${y}</strong> dengan <strong>${peakM[1]}</strong> sewa.` });
   }
 
-  // Tipe penyewa with highest late rate
+  // Highest late rate tipe
   const tipeCnt = {}; const tipeLate = {};
   data.forEach(r => {
     const t = r.tipe_penyewa;
@@ -269,9 +353,14 @@ function renderInsight(data) {
     tipe: t, pct: (tipeLate[t] || 0) / tipeCnt[t] * 100
   })).sort((a, b) => b.pct - a.pct);
   if (lateRates.length && lateRates[0].pct > 0)
-    lines.push(`${INS_ICONS.clock} Tipe <strong>${lateRates[0].tipe}</strong> memiliki tingkat keterlambatan tertinggi sebesar <strong>${lateRates[0].pct.toFixed(1)}%</strong>.`);
+    pills.push({ icon: PIL_ICON.clock, cls: 'red',
+      text: `Tipe <strong>${lateRates[0].tipe}</strong> memiliki tingkat telat tertinggi: <strong>${lateRates[0].pct.toFixed(1)}%</strong>.` });
 
-  el.innerHTML = lines.map(s => `<p>${s}</p>`).join('');
+  el.innerHTML = pills.map(p => `
+    <div class="insight-pill">
+      <div class="insight-pill-icon insight-pill-icon--${p.cls}" aria-hidden="true">${p.icon}</div>
+      <span>${p.text}</span>
+    </div>`).join('');
 }
 
 // ── Revenue Trend ─────────────────────────────────────────────────────────────
@@ -285,20 +374,42 @@ function renderTrend(data) {
     return;
   }
 
-  // Group by month
-  const monthly = {};
-  data.forEach(r => {
-    const k = r.tanggal_sewa.slice(0, 7); // YYYY-MM
-    monthly[k] = (monthly[k] || 0) + r.total_bayar;
-  });
-  const sorted   = Object.entries(monthly).sort((a, b) => a[0].localeCompare(b[0]));
   const monthNames = ['Jan','Feb','Mar','Apr','Mei','Jun','Jul','Agu','Sep','Okt','Nov','Des'];
-  const labels   = sorted.map(([k]) => { const [y,m] = k.split('-'); return `${monthNames[+m-1]} ${y}`; });
-  const values   = sorted.map(([,v]) => v);
+  const gran = S.granularity;
+  const grouped = {};
+
+  data.forEach(r => {
+    const d = parseDate(r.tanggal_sewa);
+    let k;
+    if (gran === 'daily') {
+      k = r.tanggal_sewa.slice(0, 10);
+    } else if (gran === 'weekly') {
+      // ISO week: find Monday of the week
+      const day = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+      const dow = (day.getDay() + 6) % 7; // Mon=0
+      day.setDate(day.getDate() - dow);
+      k = `${day.getFullYear()}-${String(day.getMonth()+1).padStart(2,'0')}-${String(day.getDate()).padStart(2,'0')}`;
+    } else {
+      k = r.tanggal_sewa.slice(0, 7);
+    }
+    grouped[k] = (grouped[k] || 0) + r.total_bayar;
+  });
+
+  const sorted = Object.entries(grouped).sort((a, b) => a[0].localeCompare(b[0]));
+  let labels;
+  if (gran === 'daily') {
+    labels = sorted.map(([k]) => { const [,m,d] = k.split('-'); return `${d}/${m}`; });
+  } else if (gran === 'weekly') {
+    labels = sorted.map(([k]) => { const [,m,d] = k.split('-'); return `${d}/${m}`; });
+  } else {
+    labels = sorted.map(([k]) => { const [y,m] = k.split('-'); return `${monthNames[+m-1]} ${y}`; });
+  }
+  const values = sorted.map(([,v]) => v);
 
   // Screen-reader summary
+  const granLabel = gran === 'daily' ? 'harian' : gran === 'weekly' ? 'mingguan' : 'bulanan';
   document.getElementById('s-trend').textContent =
-    `Tren pendapatan bulanan. Puncak: ${labels[values.indexOf(Math.max(...values))]} (${fmtRp(Math.max(...values))}).`;
+    values.length ? `Tren pendapatan ${granLabel}. Puncak: ${labels[values.indexOf(Math.max(...values))]} (${fmtRp(Math.max(...values))}).` : '';
 
   const tc = themeColors();
   CH.trend = new Chart(canvas, {
@@ -634,20 +745,26 @@ function renderTable() {
   if (!total) {
     tbody.innerHTML = '<tr><td colspan="9" class="tbl-empty">Tidak ada transaksi yang sesuai.</td></tr>';
   } else {
-    tbody.innerHTML = slice.map(r => `
-      <tr>
-        <td>${esc(r.id_transaksi)}</td>
+    tbody.innerHTML = slice.map(r => {
+      const initials = r.nama_penyewa.trim().split(/\s+/).slice(0, 2).map(w => w[0].toUpperCase()).join('');
+      const avatarBg = avatarColor(r.nama_penyewa);
+      return `<tr>
+        <td style="font-size:.74rem;color:var(--text-3);font-family:monospace">${esc(r.id_transaksi)}</td>
         <td>${fmtDate(r.tanggal_sewa)}</td>
-        <td>${esc(r.nama_penyewa)}</td>
+        <td><div class="cell-penyewa">
+          <div class="avatar" style="background:${avatarBg}" aria-hidden="true">${initials}</div>
+          ${esc(r.nama_penyewa)}
+        </div></td>
         <td>${esc(r.nama_kamera)}</td>
         <td>${r.durasi_hari} hari</td>
-        <td>${fmtRp(r.total_bayar)}</td>
+        <td style="font-weight:600">${fmtRp(r.total_bayar)}</td>
         <td>${r.hari_telat > 0
               ? `<span class="badge badge-late">${r.hari_telat} hari</span>`
               : '<span class="badge badge-ok">Tepat</span>'}</td>
         <td>${esc(r.tipe_penyewa)}</td>
         <td>${esc(r.sumber_booking)}</td>
-      </tr>`).join('');
+      </tr>`;
+    }).join('');
   }
 
   document.getElementById('page-info').textContent =
@@ -691,6 +808,65 @@ function renderChips() {
 // ── Event binding ─────────────────────────────────────────────────────────────
 
 function bindEvents() {
+  // ── Sidebar toggle ────────────────────────────────────────────────────────
+  const sidebar  = document.getElementById('sidebar');
+  const overlay  = document.getElementById('sidebar-overlay');
+  const wrapper  = document.getElementById('layout-wrapper');
+  const btnToggle = document.getElementById('btn-sidebar-toggle');
+
+  function isMobile() { return window.innerWidth < 768; }
+
+  function openSidebar() {
+    if (isMobile()) {
+      document.body.classList.add('sidebar-open');
+      sidebar.classList.add('open');
+      overlay.classList.remove('hidden');
+      overlay.classList.add('open');
+    } else {
+      document.body.classList.remove('sidebar-collapsed');
+    }
+    btnToggle.setAttribute('aria-expanded', 'true');
+  }
+
+  function closeSidebar() {
+    if (isMobile()) {
+      document.body.classList.remove('sidebar-open');
+      sidebar.classList.remove('open');
+      overlay.classList.remove('open');
+      overlay.classList.add('hidden');
+    } else {
+      document.body.classList.add('sidebar-collapsed');
+    }
+    btnToggle.setAttribute('aria-expanded', 'false');
+  }
+
+  function sidebarIsOpen() {
+    return isMobile()
+      ? sidebar.classList.contains('open')
+      : !document.body.classList.contains('sidebar-collapsed');
+  }
+
+  btnToggle.addEventListener('click', () => {
+    sidebarIsOpen() ? closeSidebar() : openSidebar();
+  });
+
+  // Close on overlay tap (mobile)
+  overlay.addEventListener('click', closeSidebar);
+
+  // Sidebar nav link active highlight (scroll to section)
+  document.querySelectorAll('.sidebar-link').forEach(link => {
+    link.addEventListener('click', e => {
+      e.preventDefault();
+      document.querySelectorAll('.sidebar-link').forEach(l => {
+        l.classList.remove('active');
+        l.removeAttribute('aria-current');
+      });
+      link.classList.add('active');
+      link.setAttribute('aria-current', 'page');
+      if (isMobile()) closeSidebar();
+    });
+  });
+
   // Period selector
   document.getElementById('sel-period').addEventListener('change', e => {
     S.period = e.target.value;
@@ -772,11 +948,82 @@ function bindEvents() {
 
   // Retry
   document.getElementById('btn-retry').addEventListener('click', loadData);
+
+  // Trend granularity toggle
+  document.querySelectorAll('.toggle-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('.toggle-btn').forEach(b => {
+        b.classList.remove('active');
+        b.setAttribute('aria-pressed', 'false');
+      });
+      btn.classList.add('active');
+      btn.setAttribute('aria-pressed', 'true');
+      S.granularity = btn.dataset.granularity;
+      renderTrend(getFiltered());
+    });
+  });
 }
 
 // ── Bootstrap ─────────────────────────────────────────────────────────────────
 
+/** Avatar background colour derived from name string */
+function avatarColor(name) {
+  const colors = ['#1e4a8a','#0d9488','#7c3aed','#db2777','#ea580c','#16a34a','#0369a1','#b45309'];
+  let hash = 0;
+  for (let i = 0; i < name.length; i++) hash = name.charCodeAt(i) + ((hash << 5) - hash);
+  return colors[Math.abs(hash) % colors.length];
+}
+
+/** Set the live data badge in the header */
+function updateDataBadge(count) {
+  const badge = document.getElementById('data-badge');
+  if (!badge) return;
+  const now = new Date().toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' });
+  badge.innerHTML = `<span class="badge-dot"></span>${count.toLocaleString('id-ID')} data &middot; ${now}`;
+}
+
+/** Set footer stats */
+function updateFooterStats(count) {
+  const el = document.getElementById('footer-stats');
+  if (!el) return;
+  const cameras = new Set(ALL_DATA.map(r => r.nama_kamera)).size;
+  const rev     = ALL_DATA.reduce((s, r) => s + r.total_bayar, 0);
+  el.textContent = `${count.toLocaleString('id-ID')} transaksi · ${cameras} model kamera · Total pendapatan ${fmtRp(rev)}`;
+}
+
+/** Attach IntersectionObserver to trigger .anim-card entrance animations */
+function initAnimations() {
+  const io = new IntersectionObserver((entries) => {
+    entries.forEach((entry, i) => {
+      if (entry.isIntersecting) {
+        // Stagger delay based on index within observed set
+        const delay = (i % 5) * 60;
+        setTimeout(() => entry.target.classList.add('visible'), delay);
+        io.unobserve(entry.target);
+      }
+    });
+  }, { threshold: 0.1 });
+
+  document.querySelectorAll('.anim-card').forEach(el => io.observe(el));
+}
+
+/** Show/hide scroll-to-top button */
+function initScrollTop() {
+  const btn = document.getElementById('btn-top');
+  window.addEventListener('scroll', () => {
+    btn.classList.toggle('hidden', window.scrollY < 300);
+  }, { passive: true });
+  btn.addEventListener('click', () => {
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  });
+}
+
 document.addEventListener('DOMContentLoaded', () => {
   bindEvents();
-  loadData();
+  initScrollTop();
+  loadData().then(() => {
+    updateDataBadge(ALL_DATA.length);
+    updateFooterStats(ALL_DATA.length);
+    initAnimations();
+  });
 });
